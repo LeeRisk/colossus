@@ -10,7 +10,23 @@ import java.util.zip.{Deflater, Inflater}
 import parsing._
 import DataSize._
 
-//TODO Fix the code smell from all the copy/pasta
+/*
+ * Memcache protocol for Colossus, implements a majority of the commands with the exception of some of the
+ * administrative commands like stats. It could be easily added though.
+ *
+ * It's important to note that the memcache keys cannot be over 250 bytes and will be truncated
+ *
+ * We also make sure that the keys are "well formed", removing all control characters and spaces, which
+ * are not allowed by Memcached
+ *
+ * I've grabbed a snippet from memcached docs about ttls found here: https://github.com/memcached/memcached/blob/master/doc/protocol.txt
+ *
+ * TTLs can be a unix timestamp for an integer that is no more than 30 days in seconds (2592000 seconds). If the TTL is greater
+ * than 30 days in seconds, the server will consider it to be real Unix time value rather than an offset from current time. 
+ * 
+ */
+
+
 object MemcacheCommand {
   val RN = ByteString("\r\n")
   val SP = ByteString(" ")
@@ -19,8 +35,9 @@ object MemcacheCommand {
     val b = new ByteStringBuilder
     b.append(command)
     b.append(SP)
-
-    b.append(key)
+    
+    val k = key.filter(_ > ' ').slice(0, 250) // Strip all control characters and space from the key, limit to 250
+    b.append(k)
     
     flags.foreach { f =>
       b.append(SP)
@@ -64,8 +81,6 @@ object MemcacheCommand {
   }
   case class Add(key: ByteString,  value: ByteString, ttl: Integer) extends MemcacheCommand {
   
-    // Max TTL is 30 seconds, otherwise memcache treats it as a 
-    // unix timestamp
     def bytes(compressor: Compressor) = {
       val data = compressor.compress(value)
       FormatCommand(ByteString("add"), key, Some(value), Some(ByteString(s"${ttl}")), Some(ByteString(s"0")))
@@ -123,19 +138,19 @@ object MemcacheCommand {
     def apply(key: String, value: Integer): Incr = Incr(ByteString(key), ByteString(s"${value}"))
   }
   case class Incr(key: ByteString, value: ByteString) extends MemcacheCommand {
-    def bytes(c: Compressor) = ByteString("incr ") ++ key ++ ByteString(" ") ++ value ++ RN
+    def bytes(c: Compressor) = ByteString("incr ") ++ key.filter(_ > ' ').slice(0,250) ++ ByteString(" ") ++ value ++ RN
   }
   object Decr {
     def apply(key: String, value: Integer): Decr = Decr(ByteString(key), ByteString(s"${value}")) 
   }
   case class Decr(key: ByteString, value: ByteString) extends MemcacheCommand {
-    def bytes(c: Compressor) = ByteString("decr ") ++ key ++ ByteString(" ") ++ value ++ RN
+    def bytes(c: Compressor) = ByteString("decr ") ++ key.filter(_ > ' ').slice(0,250) ++ ByteString(" ") ++ value ++ RN
   }
   object Touch {
     def apply(key: String, ttl: Integer): Touch = Touch(ByteString(key), ByteString(s"${ttl}"))
   }
   case class Touch(key: ByteString, ttl: ByteString) extends MemcacheCommand {
-    def bytes(c: Compressor) = ByteString("touch ") ++ key ++ ByteString(" ") ++ ttl ++ RN
+    def bytes(c: Compressor) = ByteString("touch ") ++ key.filter(_ > ' ').slice(0,250) ++ ByteString(" ") ++ ttl ++ RN
   }
 
 }
