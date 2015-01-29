@@ -10,39 +10,134 @@ import java.util.zip.{Deflater, Inflater}
 import parsing._
 import DataSize._
 
-
+//TODO Fix the code smell from all the copy/pasta
 object MemcacheCommand {
   val RN = ByteString("\r\n")
+  val SP = ByteString(" ")
+
+  private def FormatCommand(command: ByteString, key: ByteString, data: Option[ByteString] = None, ttl: Option[ByteString] = None, flags: Option[ByteString] = None): ByteString = {
+    val b = new ByteStringBuilder
+    b.append(command)
+    b.append(SP)
+
+    b.append(key)
+    
+    flags.foreach { f =>
+      b.append(SP)
+      b.append(f)
+    }
+    
+    ttl.foreach { t =>
+      b.append(SP)
+      b.append(t)
+    }
+
+    data.foreach { d  =>
+      b.append(SP)
+      b.append(ByteString(s"${d.size}"))
+      b.append(RN)
+      b.append(d)
+    }
+
+    b.append(RN) 
+    b.result
+  }
 
   case class Get(key: ByteString) extends MemcacheCommand {
-    def bytes (compressor: Compressor)= ByteString("get ") ++ key ++ RN
+    def bytes (compressor: Compressor)= FormatCommand(ByteString("get"), key)
   }
   object Get {
     def apply(key: String): Get = Get(ByteString(key))
   }
-  case class Set(key: ByteString,  value: ByteString) extends MemcacheCommand {
-
+  case class Set(key: ByteString,  value: ByteString, ttl: Integer) extends MemcacheCommand {
+  
     def bytes(compressor: Compressor) = {
-      val b = new ByteStringBuilder
       val data = compressor.compress(value)
-      b.append(ByteString("set ") )
-      b.append(key )
-      b.append(ByteString(s" 0 0 ${data.size}") )
-      b.append(RN )
-      b.append(data)
-      b.append(RN)
-      b.result
+      FormatCommand(ByteString("set"), key, Some(data), Some(ByteString(s"${ttl}")), Some(ByteString(s"0")))
     }
   }
   object Set {
-    def apply(key: String, value: String): Set = Set(ByteString(key), ByteString(value))
+    def apply(key: String, value: String, ttl: Integer = 0): Set = Set(ByteString(key), ByteString(value), ttl)
+  }
+  object Add {
+    def apply(key: String, value: String, ttl: Integer = 0): Add = Add(ByteString(key), ByteString(value), ttl)
+  }
+  case class Add(key: ByteString,  value: ByteString, ttl: Integer) extends MemcacheCommand {
+  
+    // Max TTL is 30 seconds, otherwise memcache treats it as a 
+    // unix timestamp
+    def bytes(compressor: Compressor) = {
+      val data = compressor.compress(value)
+      FormatCommand(ByteString("add"), key, Some(value), Some(ByteString(s"${ttl}")), Some(ByteString(s"0")))
+    }
+  }
+  object Replace {
+    def apply(key: String, value: String, ttl: Integer = 0): Replace = Replace(ByteString(key), ByteString(value), ttl)
+  }
+  case class Replace(key: ByteString, value: ByteString, ttl: Integer) extends MemcacheCommand {
+    def bytes(compressor: Compressor) = {
+      val data = compressor.compress(value)
+      FormatCommand(ByteString("replace"), key, Some(data), Some(ByteString(s"${ttl}")), Some(ByteString(s"0")))
+    }
+  }
+  
+  // Append does not take <flags> or <expiretime> but we have to provide them according to the protocol
+  object Append {
+    def apply(key: String, value: String, ttl: Integer = 0): Append = Append(ByteString(key), ByteString(value), ttl)
+  }
+
+  case class Append(key: ByteString, value: ByteString, ttl: Integer) extends MemcacheCommand {
+    def bytes(compressor: Compressor) = {
+      val data = compressor.compress(value)
+      FormatCommand(ByteString("append"), key, Some(data), Some(ByteString(s"${ttl}")), Some(ByteString(s"0")))
+    }
+  }
+
+  // Prepend does not take <flags> or <expiretime> but we have to provide them according to the protocol
+  object Prepend {
+    def apply(key: String, value: String, ttl: Integer = 0): Prepend = Prepend(ByteString(key), ByteString(value), ttl)
+  }
+  case class Prepend(key: ByteString, value: ByteString, ttl: Integer) extends MemcacheCommand {
+    def bytes(compressor: Compressor) = {
+      val data = compressor.compress(value)
+      FormatCommand(ByteString("prepend"), key, Some(data), Some(ByteString(s"${ttl}")), Some(ByteString(s"0")))
+    }
+  }
+  
+  object Cas {
+    def apply(key: String, value: String, ttl: Integer = 0): Cas = Cas(ByteString(key), ByteString(value), ttl)
+  }
+  case class Cas(key: ByteString, value: ByteString, ttl: Integer) extends MemcacheCommand {
+    def bytes(compressor: Compressor) = {
+      val data = compressor.compress(value)
+      FormatCommand(ByteString("cas"), key, Some(data), Some(ByteString(s"${ttl}")), Some(ByteString(s"0")))
+    }
   }
   case class Delete(key: ByteString) extends MemcacheCommand {
-    def bytes(c: Compressor) = ByteString("delete ") ++ key ++ RN
+    def bytes(c: Compressor) = FormatCommand(ByteString("delete"), key)
   }
   object Delete {
     def apply(key: String): Delete = Delete(ByteString(key))
   }
+  object Incr {
+    def apply(key: String, value: Integer): Incr = Incr(ByteString(key), ByteString(s"${value}"))
+  }
+  case class Incr(key: ByteString, value: ByteString) extends MemcacheCommand {
+    def bytes(c: Compressor) = ByteString("incr ") ++ key ++ ByteString(" ") ++ value ++ RN
+  }
+  object Decr {
+    def apply(key: String, value: Integer): Decr = Decr(ByteString(key), ByteString(s"${value}")) 
+  }
+  case class Decr(key: ByteString, value: ByteString) extends MemcacheCommand {
+    def bytes(c: Compressor) = ByteString("decr ") ++ key ++ ByteString(" ") ++ value ++ RN
+  }
+  object Touch {
+    def apply(key: String, ttl: Integer): Touch = Touch(ByteString(key), ByteString(s"${ttl}"))
+  }
+  case class Touch(key: ByteString, ttl: ByteString) extends MemcacheCommand {
+    def bytes(c: Compressor) = ByteString("touch ") ++ key ++ ByteString(" ") ++ ttl ++ RN
+  }
+
 }
 import MemcacheCommand.RN
 //todo, ttl's flags, etc
@@ -72,6 +167,8 @@ object MemcacheReply {
   case object Stored extends MemcacheReply with MemcacheHeader
   case object NotFound  extends MemcacheReply with MemcacheHeader
   case object Deleted extends MemcacheReply with MemcacheHeader
+  case object NotStored extends MemcacheReply with MemcacheHeader
+  case object Exists extends MemcacheReply with MemcacheHeader
   
 }
 
@@ -99,7 +196,9 @@ object MemcacheReplyParser {
   def reply = delimitedString(' ', '\r') <~ byte |>{pieces => pieces.head match {
     case "VALUE"      => value(Nil, pieces(1), pieces(3).toInt)
     case "END"        => const(NoData)
+    case "NOT_STORED" => const(NotStored)
     case "STORED"     => const(Stored)
+    case "EXISTS"     => const(Exists)
     case "NOT_FOUND"  => const(NotFound)
     case "DELETED"    => const(Deleted)
     case "ERROR"      => const(Error("ERROR"))
